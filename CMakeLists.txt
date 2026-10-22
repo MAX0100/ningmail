@@ -16,5 +16,6 @@ qt_policy(SET QTP0001 NEW)
 
 enable_testing()
 
+add_subdirectory(platform/kylin)
 add_subdirectory(app)
 add_subdirectory(tests)

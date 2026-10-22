@@ -1,7 +1,10 @@
 add_library(ningmail_core STATIC
     MetaTypes.cpp
+    Store/AccountStore.cpp
     Store/Database.cpp
+    Store/FolderStore.cpp
     Store/Migrations.cpp
+    MemoryCredentialStore.cpp
     Version.cpp
     Version.h
 )
@@ -13,6 +16,7 @@ target_include_directories(ningmail_core
 
 target_link_libraries(ningmail_core
     PUBLIC
+        ningmail_platform_kylin
         Qt6::Core
         Qt6::Sql
 )
