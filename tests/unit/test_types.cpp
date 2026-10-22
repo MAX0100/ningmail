@@ -2,6 +2,8 @@
 
 #include "MailError.h"
 
+#include <QMetaType>
+
 #include <catch2/catch_test_macros.hpp>
 
 TEST_CASE("MailFlags combine and test", "[types]") {
@@ -25,4 +27,13 @@ TEST_CASE("Result carries value or error", "[types]") {
 TEST_CASE("MailError is truthy only on failure", "[types]") {
     REQUIRE_FALSE(ningmail::MailError{});
     REQUIRE(ningmail::MailError{ningmail::ErrorCode::Auth, "bad password", ""});
+}
+
+TEST_CASE("registerMetaTypes registers domain types", "[types]") {
+    ningmail::registerMetaTypes();
+    CHECK(QMetaType::fromType<QList<ningmail::Folder>>().isRegistered());
+    CHECK(QMetaType::fromType<QList<ningmail::MessageHeader>>().isRegistered());
+    CHECK(QMetaType::fromType<QList<ningmail::AttachmentMeta>>().isRegistered());
+    CHECK(QMetaType::fromType<ningmail::MessageBody>().isRegistered());
+    CHECK(QMetaType::fromType<ningmail::MailError>().isRegistered());
 }
