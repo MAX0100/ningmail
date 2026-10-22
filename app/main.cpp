@@ -1,3 +1,4 @@
+#include "Types.h"
 #include "Version.h"
 
 #include <QGuiApplication>
@@ -25,6 +26,8 @@ int runApplication(int argc, char *argv[], bool smokeTest) {
 } // namespace
 
 int main(int argc, char *argv[]) {
+    ningmail::registerMetaTypes();
+
     // Parsed without any QGuiApplication so --version also works on headless systems.
     bool smokeTest = false;
     for (int i = 1; i < argc; ++i) {

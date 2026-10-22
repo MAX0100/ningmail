@@ -1,4 +1,5 @@
 add_library(ningmail_core STATIC
+    MetaTypes.cpp
     Version.cpp
     Version.h
 )
