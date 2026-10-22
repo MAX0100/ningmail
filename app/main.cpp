@@ -8,8 +8,7 @@
 
 namespace {
 
-int runApplication(int argc, char* argv[], bool smokeTest)
-{
+int runApplication(int argc, char *argv[], bool smokeTest) {
     QGuiApplication app(argc, argv);
     QQmlApplicationEngine engine;
     engine.loadFromModule(u"NingMail", u"Main");
@@ -25,8 +24,7 @@ int runApplication(int argc, char* argv[], bool smokeTest)
 
 } // namespace
 
-int main(int argc, char* argv[])
-{
+int main(int argc, char *argv[]) {
     // Parsed without any QGuiApplication so --version also works on headless systems.
     bool smokeTest = false;
     for (int i = 1; i < argc; ++i) {

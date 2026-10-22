@@ -2,8 +2,7 @@
 
 namespace ningmail {
 
-QString version()
-{
+QString version() {
     return QStringLiteral("0.1.0");
 }
 
