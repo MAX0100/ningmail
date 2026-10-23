@@ -8,6 +8,7 @@ add_executable(ningmail_tests
 target_link_libraries(ningmail_tests
     PRIVATE
         ningmail_core
+        ningmail_mail
         Catch2::Catch2
         Qt6::Test
 )

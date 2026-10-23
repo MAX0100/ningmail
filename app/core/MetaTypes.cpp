@@ -1,3 +1,4 @@
+#include "MailBackend.h"
 #include "Types.h"
 
 #include <QMetaType>
@@ -10,6 +11,7 @@ void registerMetaTypes() {
     qRegisterMetaType<QList<AttachmentMeta>>();
     qRegisterMetaType<MessageBody>();
     qRegisterMetaType<MailError>();
+    qRegisterMetaType<OutgoingMessage>();
 }
 
 } // namespace ningmail
