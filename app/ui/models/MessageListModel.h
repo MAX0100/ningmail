@@ -39,7 +39,9 @@ class MessageListModel : public QAbstractListModel {
     /// Resets the model and reloads the first page of the current folder.
     void reload();
 
-    bool canFetchMore(const QModelIndex &parent = QModelIndex()) const override;
+    /// Q_INVOKABLE so the QML layer can guard loadMore() with the same
+    /// check the view uses before requesting the next page.
+    Q_INVOKABLE bool canFetchMore(const QModelIndex &parent = QModelIndex()) const override;
     void fetchMore(const QModelIndex &parent) override;
     int rowCount(const QModelIndex &parent = QModelIndex()) const override;
     QVariant data(const QModelIndex &index, int role = Qt::DisplayRole) const override;

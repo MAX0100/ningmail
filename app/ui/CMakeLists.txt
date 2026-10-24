@@ -9,7 +9,16 @@ qt_add_qml_module(ningmail_ui
     QML_FILES
         Main.qml
         Theme.qml
+        EmptyState.qml
+        FolderRail.qml
+        MessageList.qml
+        MessageListDelegate.qml
+        ReaderPane.qml
+        StatusBar.qml
+        TopBar.qml
     SOURCES
+        AppController.h
+        AppController.cpp
         models/FolderListModel.h
         models/FolderListModel.cpp
         models/MessageListModel.h

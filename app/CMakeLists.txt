@@ -9,6 +9,7 @@ qt_add_executable(ningmail
 target_link_libraries(ningmail
     PRIVATE
         ningmail_core
+        ningmail_mail
         ningmail_ui
         ningmail_uiplugin
 )

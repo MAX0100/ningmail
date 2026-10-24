@@ -6,6 +6,7 @@ find_package(Qt6 6.8 REQUIRED
         Gui
         Quick
         QuickControls2
+        QuickTest
         Sql
         Network
         Concurrent

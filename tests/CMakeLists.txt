@@ -1,4 +1,5 @@
 add_subdirectory(unit)
+add_subdirectory(qml)
 
 add_test(NAME app_smoke
     COMMAND $<TARGET_FILE:ningmail> --smoke-test
