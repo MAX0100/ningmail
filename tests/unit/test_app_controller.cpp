@@ -200,6 +200,144 @@ TEST_CASE("AppController openMessage reports unknown messages", "[controller]") 
     CHECK(reader.value(QStringLiteral("plainText")).toString().isEmpty());
 }
 
+TEST_CASE("AppController fetches and stores the body on openMessage", "[controller]") {
+    SyncedFixture fixture;
+
+    const ningmail::FolderId inboxDbId = findFolderDbId(
+        *fixture.fixture.folderStore, fixture.fixture.accountId, QStringLiteral("INBOX"));
+    fixture.fixture.controller->selectFolder(inboxDbId);
+    const QVariant firstId = fixture.fixture.controller->messages()->data(
+        fixture.fixture.controller->messages()->index(0, 0), ningmail::MessageListModel::IdRole);
+
+    QSignalSpy bodyFetched(&*fixture.fixture.syncService, &ningmail::SyncService::bodyFetched);
+    fixture.fixture.controller->openMessage(firstId.toLongLong());
+    QTRY_COMPARE(bodyFetched.count(), 1);
+
+    // SyncService::fetchBody delivered a body for the requested header id, and the
+    // controller persisted it through MessageStore::saveBody.
+    const auto body = fixture.fixture.messageStore->body(firstId.toLongLong());
+    REQUIRE(body.ok());
+    CHECK_FALSE(body.value->plainText.isEmpty());
+
+    // bodyState moved to Ready on the stored header.
+    const auto header = fixture.fixture.messageStore->header(firstId.toLongLong());
+    REQUIRE(header.ok());
+    CHECK(header.value->bodyState == ningmail::BodyState::Ready);
+
+    // The reader left the loading state and shows the body content.
+    const QVariantMap reader = fixture.fixture.controller->reader();
+    CHECK(sortedKeys(reader) == readerKeySet());
+    CHECK(reader.value(QStringLiteral("loading")).toBool() == false);
+    CHECK(reader.value(QStringLiteral("error")).toString().isEmpty());
+    // The fake backend delivers text/plain, so both views must be available.
+    CHECK_FALSE(reader.value(QStringLiteral("html")).toString().isEmpty());
+    CHECK_FALSE(reader.value(QStringLiteral("plainText")).toString().isEmpty());
+}
+
+TEST_CASE("AppController discards body results of messages no longer open", "[controller]") {
+    SyncedFixture fixture;
+
+    const ningmail::FolderId inboxDbId = findFolderDbId(
+        *fixture.fixture.folderStore, fixture.fixture.accountId, QStringLiteral("INBOX"));
+    fixture.fixture.controller->selectFolder(inboxDbId);
+    const QVariant topId = fixture.fixture.controller->messages()->data(
+        fixture.fixture.controller->messages()->index(0, 0), ningmail::MessageListModel::IdRole);
+    const QVariant nextId = fixture.fixture.controller->messages()->data(
+        fixture.fixture.controller->messages()->index(1, 0), ningmail::MessageListModel::IdRole);
+    REQUIRE(topId.isValid());
+    REQUIRE(nextId.isValid());
+    REQUIRE(topId != nextId);
+
+    QSignalSpy bodyFetched(&*fixture.fixture.syncService, &ningmail::SyncService::bodyFetched);
+
+    // Race window the controller ruling pins (fix round 1): open one message
+    // and immediately a second one, before the first body arrives. The second
+    // fetchBody dispatch raises the SyncService epoch (R48), so exactly the
+    // second message's delivery survives; the reader must end up filled from
+    // that delivery alone, never from the raced-away message's path.
+    fixture.fixture.controller->openMessage(topId.toLongLong());
+    fixture.fixture.controller->openMessage(nextId.toLongLong());
+    QTRY_COMPARE(bodyFetched.count(), 1);
+    CHECK(bodyFetched.at(0).at(0).value<qint64>() == nextId.toLongLong());
+
+    const QVariantMap racedReader = fixture.fixture.controller->reader();
+    CHECK(racedReader.value(QStringLiteral("id")).toLongLong() == nextId.toLongLong());
+    CHECK(racedReader.value(QStringLiteral("loading")).toBool() == false);
+    CHECK(racedReader.value(QStringLiteral("error")).toString().isEmpty());
+    CHECK_FALSE(racedReader.value(QStringLiteral("html")).toString().isEmpty());
+
+    // The surviving delivery is recorded for its own message only. The
+    // superseded fetch's body was never delivered, so no content of it can sit
+    // behind the reader either (a missing body row reads back as empty — the
+    // store documents that as empty content, not an error).
+    const auto racedBody = fixture.fixture.messageStore->body(nextId.toLongLong());
+    REQUIRE(racedBody.ok());
+    CHECK_FALSE(racedBody.value->plainText.isEmpty());
+    CHECK(fixture.fixture.messageStore->header(nextId.toLongLong()).value->bodyState ==
+          ningmail::BodyState::Ready);
+    const auto supersededBody = fixture.fixture.messageStore->body(topId.toLongLong());
+    CHECK(supersededBody.ok());
+    CHECK(supersededBody.value->plainText.isEmpty());
+
+    // Guard window: launch a fetch for topId and move the reader elsewhere on
+    // a path that dispatches no further fetch (an unknown message). When the
+    // in-flight delivery arrives, the reader shows a different id: the store
+    // path must still run unconditionally, while the reader must stay exactly
+    // as the user left it — a removed visible guard would fill this reader.
+    fixture.fixture.controller->openMessage(topId.toLongLong());
+    fixture.fixture.controller->openMessage(999999);
+    QTRY_COMPARE(bodyFetched.count(), 2);
+    CHECK(bodyFetched.at(1).at(0).value<qint64>() == topId.toLongLong());
+
+    const auto guardedBody = fixture.fixture.messageStore->body(topId.toLongLong());
+    REQUIRE(guardedBody.ok());
+    CHECK_FALSE(guardedBody.value->plainText.isEmpty());
+    CHECK(fixture.fixture.messageStore->header(topId.toLongLong()).value->bodyState ==
+          ningmail::BodyState::Ready);
+
+    const QVariantMap guardedReader = fixture.fixture.controller->reader();
+    CHECK(guardedReader.value(QStringLiteral("id")).toLongLong() == 999999);
+    CHECK(guardedReader.value(QStringLiteral("loading")).toBool() == false);
+    CHECK(guardedReader.value(QStringLiteral("error")).toString() == QStringLiteral("消息不存在"));
+    CHECK(guardedReader.value(QStringLiteral("html")).toString().isEmpty());
+    CHECK(guardedReader.value(QStringLiteral("plainText")).toString().isEmpty());
+
+    // And the message the reader is actually waiting for still fills the
+    // reader once its own delivery lands.
+    const QVariant thirdId = fixture.fixture.controller->messages()->data(
+        fixture.fixture.controller->messages()->index(2, 0), ningmail::MessageListModel::IdRole);
+    REQUIRE(thirdId.isValid());
+    fixture.fixture.controller->openMessage(thirdId.toLongLong());
+    QTRY_COMPARE(bodyFetched.count(), 3);
+    CHECK(bodyFetched.at(2).at(0).value<qint64>() == thirdId.toLongLong());
+
+    const QVariantMap openedReader = fixture.fixture.controller->reader();
+    CHECK(openedReader.value(QStringLiteral("id")).toLongLong() == thirdId.toLongLong());
+    CHECK(openedReader.value(QStringLiteral("loading")).toBool() == false);
+    CHECK(openedReader.value(QStringLiteral("error")).toString().isEmpty());
+    CHECK_FALSE(openedReader.value(QStringLiteral("html")).toString().isEmpty());
+}
+
+TEST_CASE("AppController wraps plain text bodies into a pre block", "[controller]") {
+    SyncedFixture fixture;
+
+    const ningmail::FolderId inboxDbId = findFolderDbId(
+        *fixture.fixture.folderStore, fixture.fixture.accountId, QStringLiteral("INBOX"));
+    fixture.fixture.controller->selectFolder(inboxDbId);
+    const QVariant firstId = fixture.fixture.controller->messages()->data(
+        fixture.fixture.controller->messages()->index(0, 0), ningmail::MessageListModel::IdRole);
+
+    QSignalSpy bodyFetched(&*fixture.fixture.syncService, &ningmail::SyncService::bodyFetched);
+    fixture.fixture.controller->openMessage(firstId.toLongLong());
+    QTRY_COMPARE(bodyFetched.count(), 1);
+
+    const QVariantMap reader = fixture.fixture.controller->reader();
+    // <pre style="white-space:pre-wrap"> keeps spacing and still wraps (R72).
+    CHECK(reader.value(QStringLiteral("html"))
+              .toString()
+              .startsWith(QStringLiteral("<pre style=\"white-space:pre-wrap\">")));
+}
+
 TEST_CASE("AppController openMessage fills the reader header fields", "[controller]") {
     SyncedFixture fixture;
 

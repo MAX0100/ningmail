@@ -5,3 +5,4 @@
 #include <QtQml/qqmlextensionplugin.h>
 
 Q_IMPORT_QML_PLUGIN(NingMailPlugin)
+Q_IMPORT_QML_PLUGIN(NingMail_ComponentsPlugin)

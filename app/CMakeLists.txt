@@ -11,6 +11,8 @@ target_link_libraries(ningmail
         ningmail_core
         ningmail_mail
         ningmail_ui
+        ningmail_render
+        ningmail_renderplugin
         ningmail_uiplugin
 )
 

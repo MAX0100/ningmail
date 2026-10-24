@@ -22,4 +22,8 @@ target_compile_definitions(ningmail_tests
 ningmail_apply_warnings(ningmail_tests)
 
 include(Catch)
-catch_discover_tests(ningmail_tests)
+# The renderer needs fonts, so every test binary now runs a QGuiApplication;
+# offscreen keeps them working on headless hosts (direct runs also set the
+# platform from main.cpp when the variable is unset).
+catch_discover_tests(ningmail_tests PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen")

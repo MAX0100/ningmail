@@ -11,6 +11,8 @@ target_link_libraries(tst_qml
         Qt6::Quick
         ningmail_ui
         ningmail_uiplugin
+        ningmail_render
+        ningmail_renderplugin
 )
 
 target_compile_definitions(tst_qml

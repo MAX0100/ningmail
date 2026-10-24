@@ -36,6 +36,7 @@ target_link_libraries(ningmail_ui
         Qt6::Quick
         Qt6::QuickControls2
         ningmail_core
+        ningmail_render
 )
 
 ningmail_apply_warnings(ningmail_ui)

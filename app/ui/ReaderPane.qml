@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import NingMail.Components
 
 Pane {
     id: root
@@ -79,21 +80,25 @@ Pane {
 
         Flickable {
             clip: true
-            visible: (appController.reader.plainText ?? "") !== ""
+            visible: (appController.reader.html ?? "") !== ""
             Layout.fillWidth: true
             Layout.fillHeight: true
             contentWidth: width
-            contentHeight: bodyTextArea.height
+            contentHeight: Math.max(messageBody.contentHeight, height)
 
-            TextArea {
-                id: bodyTextArea
+            // Task 10b: the HTML body view. The controller already converted
+            // plain-text bodies into an escaped <pre> block, so the reader
+            // html is the single source of truth; MessageViewItem sanitizes
+            // again inside LiteHtmlRenderer before litehtml ever parses.
+            MessageViewItem {
+                id: messageBody
 
-                // Plain text view; the HTML view lands in task 10b.
-                readOnly: true
-                text: appController.reader.plainText ?? ""
-                wrapMode: TextArea.Wrap
-                color: Theme.textPrimary
-                background: null
+                width: parent.width
+                // QQuickPaintedItem paints into its bounding rect; the layout
+                // height must equal the rendered image's logical height or the
+                // blit gets clipped to zero.
+                height: messageBody.contentHeight
+                html: appController.reader.html ?? ""
             }
         }
     }

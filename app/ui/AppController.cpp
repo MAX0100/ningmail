@@ -47,6 +47,22 @@ QString syncStatusText(const MailError &error) {
     return text;
 }
 
+// R72: plain-text-only bodies are shown as HTML through an escaped, pre-wrapped
+// block so spacing survives and the text still wraps; html bodies pass through
+// as-is (LiteHtmlRenderer sanitizes again inside the render pipeline, so the
+// reader view can carry raw html safely).
+void fillReaderBody(QVariantMap &reader, const MessageBody &body) {
+    QString html;
+    if (!body.html.isEmpty()) {
+        html = body.html;
+    } else if (!body.plainText.isEmpty()) {
+        html = QStringLiteral("<pre style=\"white-space:pre-wrap\">") +
+               body.plainText.toHtmlEscaped() + QStringLiteral("</pre>");
+    }
+    reader.insert(QStringLiteral("html"), html);
+    reader.insert(QStringLiteral("plainText"), body.plainText);
+}
+
 } // namespace
 
 AppController::AppController(AccountStore &accountStore, FolderStore &folderStore,
@@ -145,6 +161,52 @@ AppController::AppController(AccountStore &accountStore, FolderStore &folderStor
                 setStatusText(syncStatusText(error));
             });
 
+    // Task 10b: body fetch results. SyncService delivers through its queued
+    // postStep, so this slot runs on the GUI thread; a result whose message id
+    // no longer matches the open reader is stale and dropped (the store still
+    // records a delivered body, errors leave the reader untouched).
+    connect(&m_syncService, &SyncService::bodyFetched, this,
+            [this](qint64 messageId, const MessageBody &body, const MailError &error) {
+                const bool visible = m_reader.value(QStringLiteral("id")).toLongLong() == messageId;
+                if (error) {
+                    // Persist the failure in the header so reopening cannot
+                    // look stuck; the reader shows the error message only when
+                    // it belongs to the open message.
+                    m_messageStore.setBodyState(messageId, BodyState::Error);
+                    if (visible) {
+                        QVariantMap reader = m_reader;
+                        const QString detail =
+                            !error.message.isEmpty() ? error.message : errorLabel(error.code);
+                        reader.insert(QStringLiteral("loading"), false);
+                        reader.insert(QStringLiteral("error"), detail);
+                        setReader(reader);
+                    }
+                    return;
+                }
+
+                const MailError saveError = m_messageStore.saveBody(body);
+                if (saveError) {
+                    m_messageStore.setBodyState(messageId, BodyState::Error);
+                    if (visible) {
+                        QVariantMap reader = m_reader;
+                        reader.insert(QStringLiteral("loading"), false);
+                        reader.insert(QStringLiteral("error"),
+                                      QStringLiteral("保存正文失败：") + saveError.message);
+                        setReader(reader);
+                    }
+                    return;
+                }
+                m_messageStore.setBodyState(messageId, BodyState::Ready);
+
+                if (visible) {
+                    QVariantMap reader = m_reader;
+                    fillReaderBody(reader, body);
+                    reader.insert(QStringLiteral("loading"), false);
+                    reader.insert(QStringLiteral("error"), QString());
+                    setReader(reader);
+                }
+            });
+
     clearReader();
 }
 
@@ -205,18 +267,54 @@ void AppController::openMessage(MessageId messageId) {
         return;
     }
 
-    // Body fields arrive in task 10b; this task only fills the header.
     reader.insert(QStringLiteral("subject"), header.value->subject);
     // Same display rule as FromRole: name when present, address otherwise (R60).
     reader.insert(QStringLiteral("from"), header.value->from.name.isEmpty()
                                               ? header.value->from.address
                                               : header.value->from.name);
     reader.insert(QStringLiteral("date"), header.value->sentAt);
+
+    // Task 10b: a fetched and stored body is served straight from the store.
+    const auto body = m_messageStore.body(messageId);
+    const bool bodyReady = header.value->bodyState == BodyState::Ready && body.ok();
+    if (bodyReady) {
+        fillReaderBody(reader, *body.value);
+        reader.insert(QStringLiteral("loading"), false);
+        reader.insert(QStringLiteral("error"), QString());
+        setReader(reader);
+        return;
+    }
+
+    // Body miss: keep loading=true and fetch in the background. Errors are
+    // delivered through bodyFetched (never silently dropped on the UI).
     reader.insert(QStringLiteral("loading"), true);
     reader.insert(QStringLiteral("html"), QString());
     reader.insert(QStringLiteral("plainText"), QString());
     reader.insert(QStringLiteral("error"), QString());
     setReader(reader);
+
+    // Guard the R62 rule: credentials and account state are only touched on
+    // the GUI thread. No account → the reader cannot fetch; surface it
+    // immediately instead of waiting for a bodyFetched that never comes.
+    if (m_currentAccountId <= 0) {
+        QVariantMap stalled = m_reader;
+        stalled.insert(QStringLiteral("loading"), false);
+        stalled.insert(QStringLiteral("error"), QStringLiteral("未配置账号，无法获取正文"));
+        setReader(stalled);
+        return;
+    }
+    const auto account = m_accountStore.get(m_currentAccountId);
+    if (!account.ok()) {
+        qWarning() << "Account read failed:" << account.error.message << account.error.detail;
+        QVariantMap stalled = m_reader;
+        stalled.insert(QStringLiteral("loading"), false);
+        stalled.insert(QStringLiteral("error"),
+                       errorLabel(account.error.code) + QStringLiteral("（获取正文失败）"));
+        setReader(stalled);
+        return;
+    }
+    m_messageStore.setBodyState(messageId, BodyState::Fetching);
+    m_syncService.fetchBody(*account.value, *header.value);
 }
 
 void AppController::composeNew() {
