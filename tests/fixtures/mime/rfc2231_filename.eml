@@ -1,0 +1,12 @@
+From: sender@example.com
+Subject: rfc2231 name
+Date: Thu, 21 Oct 2021 08:12:00 +0800
+Content-Type: multipart/mixed; boundary="mix-1"
+
+--mix-1
+Content-Type: application/octet-stream
+Content-Disposition: attachment; filename*=UTF-8''%E4%B8%AD%E6%96%87.txt
+Content-Transfer-Encoding: base64
+
+aGVsbG8=
+--mix-1--

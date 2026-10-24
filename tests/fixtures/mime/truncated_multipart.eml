@@ -1,0 +1,8 @@
+From: sender@example.com
+Subject: truncated
+Content-Type: multipart/mixed; boundary="cut-1"
+
+--cut-1
+Content-Type: text/plain; charset="utf-8"
+
+hello

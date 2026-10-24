@@ -14,3 +14,5 @@ find_package(Qt6 6.8 REQUIRED
 )
 
 find_package(Catch2 3 REQUIRED)
+
+find_package(ICU REQUIRED COMPONENTS uc)

@@ -1,0 +1,17 @@
+From: sender@example.com
+Subject: inline image
+Date: Thu, 21 Oct 2021 08:12:00 +0800
+Content-Type: multipart/related; boundary="rel-1"
+
+--rel-1
+Content-Type: text/html; charset="utf-8"
+
+<html><body><img src="cid:img1"></body></html>
+--rel-1
+Content-Type: image/png
+Content-Disposition: inline; filename="logo.png"
+Content-ID: <img1>
+Content-Transfer-Encoding: base64
+
+iVBORw0KGgo=
+--rel-1--

@@ -13,6 +13,10 @@ target_link_libraries(ningmail_tests
         Qt6::Test
 )
 
+target_compile_definitions(ningmail_tests
+    PRIVATE
+        NINGMAIL_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/tests/fixtures/mime")
+
 ningmail_apply_warnings(ningmail_tests)
 
 include(Catch)

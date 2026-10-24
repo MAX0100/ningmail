@@ -1,0 +1,15 @@
+From: sender@example.com
+Subject: both bodies
+Date: Thu, 21 Oct 2021 08:12:00 +0800
+Content-Type: multipart/alternative; boundary="alt-1"
+
+This preamble should be ignored.
+--alt-1
+Content-Type: text/plain; charset="utf-8"
+
+plain body
+--alt-1
+Content-Type: text/html; charset="utf-8"
+
+<p>html</p>
+--alt-1--
