@@ -6,6 +6,7 @@ add_library(ningmail_core STATIC
     Store/MessageStore.cpp
     Store/Migrations.cpp
     MemoryCredentialStore.cpp
+    SyncService.cpp
     Version.cpp
     Version.h
 )
@@ -19,6 +20,7 @@ target_link_libraries(ningmail_core
     PUBLIC
         ningmail_platform_kylin
         Qt6::Core
+        Qt6::Concurrent
         Qt6::Sql
 )
 
