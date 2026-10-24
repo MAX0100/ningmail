@@ -17,3 +17,7 @@ find_package(Qt6 6.8 REQUIRED
 find_package(Catch2 3 REQUIRED)
 
 find_package(ICU REQUIRED COMPONENTS uc)
+
+find_package(PkgConfig REQUIRED)
+
+pkg_check_modules(GUMBO REQUIRED IMPORTED_TARGET gumbo)

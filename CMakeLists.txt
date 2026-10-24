@@ -18,5 +18,6 @@ enable_testing()
 
 add_subdirectory(platform/kylin)
 add_subdirectory(libs/mail)
+add_subdirectory(libs/render)
 add_subdirectory(app)
 add_subdirectory(tests)
