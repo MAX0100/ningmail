@@ -9,12 +9,24 @@ qt_add_qml_module(ningmail_ui
     QML_FILES
         Main.qml
         Theme.qml
+    SOURCES
+        models/FolderListModel.h
+        models/FolderListModel.cpp
+        models/MessageListModel.h
+        models/MessageListModel.cpp
+)
+
+# models/ headers are included as "models/..." by tests and AppController.
+target_include_directories(ningmail_ui
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
 target_link_libraries(ningmail_ui
     PUBLIC
         Qt6::Quick
         Qt6::QuickControls2
+        ningmail_core
 )
 
 ningmail_apply_warnings(ningmail_ui)

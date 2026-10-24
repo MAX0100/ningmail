@@ -9,6 +9,7 @@ target_link_libraries(ningmail_tests
     PRIVATE
         ningmail_core
         ningmail_mail
+        ningmail_ui
         Catch2::Catch2
         Qt6::Test
 )
