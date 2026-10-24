@@ -3,6 +3,7 @@ add_library(ningmail_core STATIC
     Store/AccountStore.cpp
     Store/Database.cpp
     Store/FolderStore.cpp
+    Store/MessageStore.cpp
     Store/Migrations.cpp
     MemoryCredentialStore.cpp
     Version.cpp
