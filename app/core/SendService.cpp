@@ -200,12 +200,19 @@ void SendService::runSend(qint64 outboxId, const OutgoingMessage &message,
         }
 
         // Success takes the sent-copy detour first: appendSent records the
-        // raw MIME with the backend, then the row lands in Sent.
+        // raw MIME with the backend. Best effort (R91): the server already
+        // accepted the message here, so a failed Sent copy must NOT fail the
+        // row — the M1 re-send would duplicate a delivered message. The
+        // failure is logged with the outbox id and the backend text, and the
+        // row still lands in Sent. The numeric code is always included
+        // because mapped errors (errorFromMailimap) travel with an empty
+        // message/detail.
         const MailError appendError = backend->appendSent(message, rawMime);
         if (appendError) {
-            postStep(
-                [this, outboxId, failure = appendError]() { finishFailure(outboxId, failure); });
-            return;
+            qWarning() << "SendService: outbox item" << outboxId
+                       << "was sent, but the Sent-folder copy failed (keeping the send):"
+                       << errorText(appendError)
+                       << QStringLiteral("(code %1)").arg(static_cast<int>(appendError.code));
         }
     }
 

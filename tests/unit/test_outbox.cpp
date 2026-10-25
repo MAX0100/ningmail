@@ -525,3 +525,165 @@ TEST_CASE("SendService sendNow skips items that are neither Pending nor Retry", 
     QTRY_COMPARE(spy.count(), 2);
     CHECK(spy.at(1).at(1).value<ningmail::OutboxState>() == ningmail::OutboxState::Sent);
 }
+
+// ---------------------------------------------------------------------------
+// R91: a Sent-copy failure after a delivered send is a best-effort side
+// effect and must not re-park the (already delivered) row in Retry — the
+// M1 re-send would duplicate a message the server already accepted.
+// FakeMailBackend's T12 semantics stay frozen, so the injection uses a
+// test-local backend whose appendSent always fails.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// Counters shared between the factory and its backend: sendNow runs on the
+/// thread pool, so the test only reads them once the queued completion steps
+/// (Sending + final state) have landed back on the test thread.
+struct FailingAppendCounters {
+    int sendCalls = 0;
+    int appendCalls = 0;
+};
+
+/// A backend whose send succeeds (the server accepted the message) but whose
+/// Sent-folder copy always fails with a Protocol error.
+class FailingAppendBackend final : public ningmail::MailBackend {
+  public:
+    explicit FailingAppendBackend(std::shared_ptr<FailingAppendCounters> counters)
+        : m_counters(std::move(counters)) {
+    }
+
+    ningmail::MailError connect(const ningmail::Account &account, const QString &secret) override {
+        Q_UNUSED(account)
+        Q_UNUSED(secret)
+        return {};
+    }
+
+    ningmail::Result<QList<ningmail::Folder>> listFolders() override {
+        return ningmail::Result<QList<ningmail::Folder>>::success({});
+    }
+
+    ningmail::Result<QList<ningmail::MessageHeader>>
+    fetchHeaders(const ningmail::Folder &folder, quint32 fromUid, int limit) override {
+        Q_UNUSED(folder)
+        Q_UNUSED(fromUid)
+        Q_UNUSED(limit)
+        return ningmail::Result<QList<ningmail::MessageHeader>>::failure(
+            ningmail::MailError{ningmail::ErrorCode::Storage, QString::fromUtf8("Not connected"),
+                                QString::fromUtf8("test backend")});
+    }
+
+    ningmail::Result<ningmail::MessageBody>
+    fetchBody(const ningmail::MessageHeader &header) override {
+        Q_UNUSED(header)
+        return ningmail::Result<ningmail::MessageBody>::failure(ningmail::MailError{
+            ningmail::ErrorCode::Storage, QString::fromUtf8("Message not found"),
+            QString::fromUtf8("test backend")});
+    }
+
+    ningmail::MailError send(const ningmail::OutgoingMessage &message) override {
+        Q_UNUSED(message)
+        ++m_counters->sendCalls;
+        return {};
+    }
+
+    ningmail::MailError appendSent(const ningmail::OutgoingMessage &message,
+                                   const QByteArray &rawMime) override {
+        Q_UNUSED(message)
+        Q_UNUSED(rawMime)
+        ++m_counters->appendCalls;
+        return ningmail::MailError{ningmail::ErrorCode::Protocol,
+                                   QString::fromUtf8("Sent folder not found"),
+                                   QString::fromUtf8("test backend")};
+    }
+
+    void disconnect() override {
+    }
+
+  private:
+    std::shared_ptr<FailingAppendCounters> m_counters;
+};
+
+/// The [send] fixture with a factory that hands out the failing-append
+/// backend instead of the frozen FakeMailBackend.
+struct FailingAppendFixture {
+    QTemporaryDir dir;
+    std::shared_ptr<FailingAppendCounters> counters = std::make_shared<FailingAppendCounters>();
+
+    std::unique_ptr<ningmail::Database> database;
+    std::unique_ptr<ningmail::AccountStore> accountStore;
+    std::unique_ptr<ningmail::MemoryCredentialStore> credentials;
+
+    class Factory final : public ningmail::MailBackendFactory {
+      public:
+        explicit Factory(std::shared_ptr<FailingAppendCounters> counters)
+            : m_counters(std::move(counters)) {
+        }
+
+        std::unique_ptr<ningmail::MailBackend> create(const ningmail::Account &account) override {
+            Q_UNUSED(account)
+            return std::make_unique<FailingAppendBackend>(m_counters);
+        }
+
+      private:
+        std::shared_ptr<FailingAppendCounters> m_counters;
+    };
+
+    std::unique_ptr<Factory> factory;
+    std::unique_ptr<ningmail::OutboxStore> outbox;
+    std::unique_ptr<ningmail::SendService> service;
+    ningmail::AccountId accountId = 0;
+
+    FailingAppendFixture()
+        : database(migratedDatabase(dir)),
+          accountStore(std::make_unique<ningmail::AccountStore>(*database)),
+          credentials(std::make_unique<ningmail::MemoryCredentialStore>()),
+          factory(std::make_unique<Factory>(counters)),
+          outbox(std::make_unique<ningmail::OutboxStore>(*database)),
+          service(std::make_unique<ningmail::SendService>(*outbox, *factory, *credentials)) {
+        auto account = sampleAccount();
+        const auto created = accountStore->create(account);
+        REQUIRE(created.ok());
+        accountId = *created.value;
+        REQUIRE(credentials->write("account/writer", "secret"));
+    }
+};
+
+} // namespace
+
+TEST_CASE("SendService sendNow keeps the Sent state when the Sent-copy append fails", "[send]") {
+    FailingAppendFixture fixture;
+
+    const auto account = fixture.accountStore->get(fixture.accountId);
+    REQUIRE(account.ok());
+    ningmail::OutgoingMessage message;
+    message.account = *account.value;
+    message.to.append(
+        ningmail::MailAddress{QString::fromUtf8("Rong Li"), QString::fromUtf8("rong@example.com")});
+    message.subject = QString::fromUtf8("季度汇报");
+    message.bodyText = QString::fromUtf8("第一行\n第二行");
+
+    const qint64 id = fixture.service->enqueue(message);
+    REQUIRE(id > 0);
+
+    QSignalSpy spy(&*fixture.service, &ningmail::SendService::itemStateChanged);
+    fixture.service->sendNow(id);
+
+    // The server accepted the message (send ok); the failed Sent copy only
+    // downgrades to a warning — the final state must still be Sent.
+    QTRY_COMPARE(spy.count(), 2);
+    CHECK(spy.at(0).at(1).value<ningmail::OutboxState>() == ningmail::OutboxState::Sending);
+    CHECK(spy.at(1).at(0).value<qint64>() == id);
+    CHECK(spy.at(1).at(1).value<ningmail::OutboxState>() == ningmail::OutboxState::Sent);
+    CHECK(spy.at(1).at(2).toString().isEmpty());
+
+    const auto stored = fixture.outbox->get(id);
+    REQUIRE(stored.ok());
+    REQUIRE(stored.value->state == ningmail::OutboxState::Sent);
+    // The success path bumps no attempts and leaves no error behind.
+    REQUIRE(stored.value->attempts == 0);
+    REQUIRE(stored.value->lastError.isEmpty());
+
+    // Both round-trips ran: the send reached the backend and so did the app.
+    QTRY_COMPARE(fixture.counters->sendCalls, 1);
+    QTRY_COMPARE(fixture.counters->appendCalls, 1);
+}

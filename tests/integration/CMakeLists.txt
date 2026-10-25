@@ -7,6 +7,7 @@ endif()
 
 add_executable(ningmail_integration
     test_libetpan_imap.cpp
+    test_libetpan_smtp.cpp
 )
 
 target_link_libraries(ningmail_integration
