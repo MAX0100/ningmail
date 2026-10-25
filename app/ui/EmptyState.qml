@@ -7,6 +7,11 @@ Item {
 
     property string title: ""
     property string description: ""
+    /// Task 15 (R93⑧): optional primary action. Empty (default) adds no
+    /// button; the host owns the handler (FolderRail forwards to Main's
+    /// AccountSetupDialog).
+    property string actionText: ""
+    signal actionTriggered()
 
     ColumnLayout {
         anchors.centerIn: parent
@@ -30,6 +35,14 @@ Item {
             horizontalAlignment: Text.AlignHCenter
             wrapMode: Text.WordWrap
             Layout.fillWidth: true
+        }
+
+        Button {
+            objectName: "addAccountButton"
+            visible: root.actionText.length > 0
+            text: root.actionText
+            Layout.alignment: Qt.AlignHCenter
+            onClicked: root.actionTriggered()
         }
     }
 }

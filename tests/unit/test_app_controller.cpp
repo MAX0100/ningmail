@@ -2,6 +2,7 @@
 
 #include "FakeMailBackend.h"
 #include "MailError.h"
+#include "MailtoParser.h"
 #include "MemoryCredentialStore.h"
 #include "SendService.h"
 #include "Store/AccountStore.h"
@@ -16,6 +17,7 @@
 #include "models/MessageListModel.h"
 
 #include <QDateTime>
+#include <QHash>
 #include <QSignalSpy>
 #include <QString>
 #include <QTemporaryDir>
@@ -526,4 +528,217 @@ TEST_CASE("AppController sendMessage surfaces a send failure in statusText", "[c
     QTRY_COMPARE(spy.count(), 2);
     CHECK(spy.at(1).at(1).value<ningmail::OutboxState>() == ningmail::OutboxState::Retry);
     CHECK(fixture.controller->statusText().startsWith(QStringLiteral("发送失败")));
+}
+
+// ---- Task 15: createAccount / openComposer ------------------------------
+
+namespace {
+
+// Task 12 precedent keeps secrets in a map, but isPersistent() is hardcoded
+// false; the createAccount contract needs both a persistent variant and a
+// failure-injecting one, so the test derives its own CredentialStore subclass.
+class PersistentCredentialStore final : public ningmail::CredentialStore {
+  public:
+    std::optional<QString> read(const QString &key) override {
+        auto it = m_secrets.find(key);
+        if (it == m_secrets.end()) {
+            return std::nullopt;
+        }
+        return *it;
+    }
+    bool write(const QString &key, const QString &secret) override {
+        m_secrets.insert(key, secret);
+        return true;
+    }
+    void remove(const QString &key) override {
+        m_secrets.remove(key);
+    }
+    bool isPersistent() const override {
+        return true;
+    }
+
+  private:
+    QHash<QString, QString> m_secrets;
+};
+
+class FailingCredentialStore final : public ningmail::CredentialStore {
+  public:
+    std::optional<QString> read(const QString &key) override {
+        auto it = m_secrets.find(key);
+        if (it == m_secrets.end()) {
+            return std::nullopt;
+        }
+        return *it;
+    }
+    bool write(const QString &key, const QString &secret) override {
+        m_secrets.insert(key, secret);
+        return false; // keyring failure injection (MemoryCredentialStore cannot)
+    }
+    void remove(const QString &key) override {
+        m_secrets.remove(key);
+    }
+    bool isPersistent() const override {
+        return false;
+    }
+
+  private:
+    QHash<QString, QString> m_secrets;
+};
+
+/// Same wiring as ControllerFixture, but the credential store is injected so
+/// each createAccount branch can use its own substitute.
+struct CreateAccountFixture {
+    QTemporaryDir dir;
+    std::unique_ptr<ningmail::Database> database;
+    std::unique_ptr<ningmail::AccountStore> accountStore;
+    std::unique_ptr<ningmail::FolderStore> folderStore;
+    std::unique_ptr<ningmail::MessageStore> messageStore;
+    std::unique_ptr<ningmail::FakeMailBackendFactory> backendFactory;
+    std::unique_ptr<ningmail::SyncService> syncService;
+    std::unique_ptr<ningmail::AppController> controller;
+
+    explicit CreateAccountFixture(ningmail::CredentialStore &credentials) {
+        database = std::make_unique<ningmail::Database>(dir.filePath("test.db"));
+        REQUIRE_FALSE(database->open());
+        REQUIRE_FALSE(database->migrate());
+        accountStore = std::make_unique<ningmail::AccountStore>(*database);
+        folderStore = std::make_unique<ningmail::FolderStore>(*database);
+        messageStore = std::make_unique<ningmail::MessageStore>(*database);
+        backendFactory = std::make_unique<ningmail::FakeMailBackendFactory>();
+        syncService = std::make_unique<ningmail::SyncService>(backendFactory.get(), &credentials);
+        REQUIRE(accountStore->list().value->isEmpty());
+        controller = std::make_unique<ningmail::AppController>(
+            *accountStore, *folderStore, *messageStore, *syncService, credentials);
+        controller->initialize();
+    }
+
+    static QVariantMap validFields() {
+        QVariantMap fields;
+        fields.insert(QStringLiteral("displayName"), QStringLiteral("Home"));
+        fields.insert(QStringLiteral("email"), QStringLiteral("home@example.com"));
+        fields.insert(QStringLiteral("imapHost"), QStringLiteral("imap.example.com"));
+        fields.insert(QStringLiteral("imapPort"), 993);
+        fields.insert(QStringLiteral("imapSecurity"), QStringLiteral("tls"));
+        fields.insert(QStringLiteral("smtpHost"), QStringLiteral("smtp.example.com"));
+        fields.insert(QStringLiteral("smtpPort"), 465);
+        fields.insert(QStringLiteral("smtpSecurity"), QStringLiteral("starttls"));
+        fields.insert(QStringLiteral("username"), QString());
+        fields.insert(QStringLiteral("password"), QStringLiteral("secret"));
+        return fields;
+    }
+};
+
+} // namespace
+
+TEST_CASE("AppController createAccount stores account and credential", "[controller]") {
+    PersistentCredentialStore persistent;
+    CreateAccountFixture fixture(persistent);
+    QSignalSpy syncStarted(&*fixture.syncService, &ningmail::SyncService::syncStarted);
+
+    fixture.controller->createAccount(CreateAccountFixture::validFields());
+
+    // isPersistent() decides between the two success texts (R93⑦).
+    CHECK(fixture.controller->statusText() == QStringLiteral("账号已添加"));
+    const auto accounts = fixture.accountStore->list();
+    REQUIRE(accounts.ok());
+    REQUIRE(accounts.value->size() == 1);
+    const ningmail::Account &account = accounts.value->first();
+    CHECK(account.email == QStringLiteral("home@example.com"));
+    CHECK(account.imapHost == QStringLiteral("imap.example.com"));
+    CHECK(account.imapPort == 993);
+    CHECK(account.imapSecurity == ningmail::Security::Tls);
+    CHECK(account.smtpHost == QStringLiteral("smtp.example.com"));
+    CHECK(account.smtpPort == 465);
+    CHECK(account.smtpSecurity == ningmail::Security::StartTls);
+    // An empty username falls back to the email address.
+    CHECK(account.username == QStringLiteral("home@example.com"));
+    // The two-step credentialRef contract (R93⑦): create first, then update.
+    CHECK(account.credentialRef == QStringLiteral("account-%1").arg(account.id));
+    CHECK(persistent.read(account.credentialRef) == QStringLiteral("secret"));
+
+    // The new account becomes current and its first sync starts right away.
+    QTRY_COMPARE(syncStarted.count(), 1);
+    CHECK(syncStarted.at(0).at(0).value<qint64>() == account.id);
+}
+
+TEST_CASE("AppController createAccount reports session-only passwords", "[controller]") {
+    ControllerFixture fixture; // MemoryCredentialStore: isPersistent() == false
+
+    fixture.controller->createAccount(CreateAccountFixture::validFields());
+
+    CHECK(fixture.controller->statusText() == QStringLiteral("密码仅本次会话有效"));
+    const auto accounts = fixture.accountStore->list();
+    REQUIRE(accounts.ok());
+    REQUIRE(accounts.value->size() == 1);
+    const ningmail::Account &account = accounts.value->first();
+    CHECK(account.credentialRef == QStringLiteral("account-%1").arg(account.id));
+    CHECK(fixture.credentials->read(account.credentialRef) == QStringLiteral("secret"));
+}
+
+TEST_CASE("AppController createAccount rolls back when the credential write fails",
+          "[controller]") {
+    FailingCredentialStore failing;
+    CreateAccountFixture fixture(failing);
+
+    fixture.controller->createAccount(CreateAccountFixture::validFields());
+
+    CHECK(fixture.controller->statusText() == QStringLiteral("凭据写入失败"));
+    // The whole account row is gone again — no half-created account survives.
+    CHECK(fixture.accountStore->list().value->isEmpty());
+    CHECK(fixture.controller->folders()->rowCount() == 0);
+}
+
+TEST_CASE("AppController createAccount rejects invalid input", "[controller]") {
+    SECTION("out-of-range imap port") {
+        ningmail::MemoryCredentialStore credentials;
+        CreateAccountFixture fixture(credentials);
+        QVariantMap fields = CreateAccountFixture::validFields();
+        fields.insert(QStringLiteral("imapPort"), 70000);
+        fixture.controller->createAccount(fields);
+        CHECK(fixture.controller->statusText() == QStringLiteral("请检查输入"));
+        CHECK(fixture.accountStore->list().value->isEmpty());
+    }
+    SECTION("unknown security value") {
+        ningmail::MemoryCredentialStore credentials;
+        CreateAccountFixture fixture(credentials);
+        QVariantMap fields = CreateAccountFixture::validFields();
+        fields.insert(QStringLiteral("smtpSecurity"), QStringLiteral("ssl"));
+        fixture.controller->createAccount(fields);
+        CHECK(fixture.controller->statusText() == QStringLiteral("请检查输入"));
+        CHECK(fixture.accountStore->list().value->isEmpty());
+    }
+    SECTION("missing smtp host") {
+        ningmail::MemoryCredentialStore credentials;
+        CreateAccountFixture fixture(credentials);
+        QVariantMap fields = CreateAccountFixture::validFields();
+        fields.insert(QStringLiteral("smtpHost"), QString());
+        fixture.controller->createAccount(fields);
+        CHECK(fixture.controller->statusText() == QStringLiteral("请检查输入"));
+        CHECK(fixture.accountStore->list().value->isEmpty());
+    }
+}
+
+TEST_CASE("AppController openComposer emits the joined draft map", "[controller]") {
+    ControllerFixture fixture;
+    QSignalSpy spy(&*fixture.controller, &ningmail::AppController::composeRequested);
+
+    ningmail::MailtoRequest request;
+    request.to = QStringList{QStringLiteral("one@x.com"), QStringLiteral("two@x.com")};
+    request.cc = QStringList{QStringLiteral("three@x.com")};
+    request.bcc = QStringList{QStringLiteral("four@x.com")};
+    request.subject = QStringLiteral("Hello");
+    request.body = QStringLiteral("Body");
+
+    fixture.controller->openComposer(request);
+
+    REQUIRE(spy.count() == 1);
+    const QVariantMap draft = spy.at(0).at(0).toMap();
+    CHECK(draft.value(QStringLiteral("draftId")).toInt() == -1);
+    // to/cc arrive pre-joined for Main.qml's string properties (R93④); bcc is
+    // carried in the map but M1 does not render it.
+    CHECK(draft.value(QStringLiteral("to")).toString() == QStringLiteral("one@x.com, two@x.com"));
+    CHECK(draft.value(QStringLiteral("cc")).toString() == QStringLiteral("three@x.com"));
+    CHECK(draft.contains(QStringLiteral("bcc")));
+    CHECK(draft.value(QStringLiteral("subject")).toString() == QStringLiteral("Hello"));
+    CHECK(draft.value(QStringLiteral("body")).toString() == QStringLiteral("Body"));
 }

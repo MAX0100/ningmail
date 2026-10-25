@@ -23,6 +23,7 @@ namespace ningmail {
 class CredentialStore;
 class DraftStore;
 class SendService;
+struct MailtoRequest;
 
 /// GUI-thread orchestrator of the three-pane shell: owns the list models and
 /// wires SyncService results through the stores and back into the models.
@@ -45,6 +46,12 @@ class AppController : public QObject {
     Q_INVOKABLE void refresh();
     Q_INVOKABLE void openMessage(MessageId messageId);
     Q_INVOKABLE void composeNew();
+    // Task 15 (R93⑦): dialog-driven account wiring; the validation below
+    // mirrors AccountSetupDialog so bogus QML input cannot reach the database.
+    Q_INVOKABLE void createAccount(const QVariantMap &fields);
+    // C++ only on purpose (main.cpp flow, not exposed to QML): turns a parsed
+    // mailto request into the same draft map composeNew() producers emit.
+    void openComposer(const MailtoRequest &request);
 
     void setDraftStore(DraftStore *store); // 可空；为空时自动保存不可用
     // Task 12: 可空；为空时发送保持禁用（重复注入会被忽略）

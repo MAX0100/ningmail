@@ -1,11 +1,14 @@
 #include "AppController.h"
 
 #include "CredentialStore.h"
+#include "MailtoParser.h"
 #include "SendService.h"
 #include "Store/DraftStore.h"
 
 #include <QList>
 #include <utility>
+
+#include <optional>
 
 namespace ningmail {
 
@@ -47,6 +50,37 @@ QString syncStatusText(const MailError &error) {
         text += QStringLiteral("（%1）").arg(detail);
     }
     return text;
+}
+
+/// Task 15 (R93⑦): the createAccount defence helpers. QML numbers arrive as
+/// doubles and possibly as strings, so both paths go through QVariant first.
+
+/// "tls"/"starttls"/"none" map onto the Security enum; anything else fails
+/// validation so a bogus string never reaches the database.
+std::optional<Security> securityFrom(const QVariant &value) {
+    const QString text = value.toString().trimmed();
+    if (text == QLatin1String("tls")) {
+        return Security::Tls;
+    }
+    if (text == QLatin1String("starttls")) {
+        return Security::StartTls;
+    }
+    if (text == QLatin1String("none")) {
+        return Security::None;
+    }
+    return std::nullopt;
+}
+
+/// Port values must convert and sit in the 1–65535 range.
+bool portInRange(const QVariant &value) {
+    bool ok = false;
+    const int port = value.toInt(&ok);
+    return ok && port >= 1 && port <= 65535;
+}
+
+/// Required text fields trim to something non-empty.
+bool hasText(const QVariant &value) {
+    return !value.toString().trimmed().isEmpty();
 }
 
 // R72: plain-text-only bodies are shown as HTML through an escaped, pre-wrapped
@@ -321,6 +355,111 @@ void AppController::openMessage(MessageId messageId) {
 
 void AppController::composeNew() {
     emit composeRequested(QVariantMap{});
+}
+
+// Task 15 (R93④): mailto requests become the draft map consumed by
+// Main.qml's openComposer — to/cc are pre-joined into strings because the
+// composer's initialTo/initialCc are plain string properties; bcc is carried
+// in the map but M1 does not render it (R91-style deferral).
+void AppController::openComposer(const MailtoRequest &request) {
+    QVariantMap draft;
+    draft.insert(QStringLiteral("draftId"), -1);
+    draft.insert(QStringLiteral("to"), request.to.join(QStringLiteral(", ")));
+    draft.insert(QStringLiteral("cc"), request.cc.join(QStringLiteral(", ")));
+    draft.insert(QStringLiteral("bcc"), request.bcc.join(QStringLiteral(", ")));
+    draft.insert(QStringLiteral("subject"), request.subject);
+    draft.insert(QStringLiteral("body"), request.body);
+    emit composeRequested(draft);
+}
+
+// Task 15 (R93⑦): Q_INVOKABLE on the GUI thread, so every store and credential
+// write below happens synchronously inside this call (R62 family) and the
+// password never enters a log or status message.
+void AppController::createAccount(const QVariantMap &fields) {
+    // Defence first: bogus input never touches the database. The dialog
+    // already validated; this mirrors it exactly (R93⑦).
+    if (!hasText(fields.value(QStringLiteral("email"))) ||
+        !hasText(fields.value(QStringLiteral("imapHost"))) ||
+        !hasText(fields.value(QStringLiteral("smtpHost"))) ||
+        !portInRange(fields.value(QStringLiteral("imapPort"))) ||
+        !portInRange(fields.value(QStringLiteral("smtpPort")))) {
+        setStatusText(QStringLiteral("请检查输入"));
+        return;
+    }
+    const std::optional<Security> imapSecurity =
+        securityFrom(fields.value(QStringLiteral("imapSecurity")));
+    const std::optional<Security> smtpSecurity =
+        securityFrom(fields.value(QStringLiteral("smtpSecurity")));
+    if (!imapSecurity.has_value() || !smtpSecurity.has_value()) {
+        setStatusText(QStringLiteral("请检查输入"));
+        return;
+    }
+
+    Account account;
+    account.displayName = fields.value(QStringLiteral("displayName")).toString().trimmed();
+    account.email = fields.value(QStringLiteral("email")).toString().trimmed();
+    account.imapHost = fields.value(QStringLiteral("imapHost")).toString().trimmed();
+    account.imapPort = static_cast<quint16>(fields.value(QStringLiteral("imapPort")).toInt());
+    account.imapSecurity = *imapSecurity;
+    account.smtpHost = fields.value(QStringLiteral("smtpHost")).toString().trimmed();
+    account.smtpPort = static_cast<quint16>(fields.value(QStringLiteral("smtpPort")).toInt());
+    account.smtpSecurity = *smtpSecurity;
+    // An empty username falls back to the email address.
+    account.username = fields.value(QStringLiteral("username")).toString().trimmed();
+    if (account.username.isEmpty()) {
+        account.username = account.email;
+    }
+    const QString password = fields.value(QStringLiteral("password")).toString();
+
+    // Step 1 of the two-step credentialRef contract: create the row, then
+    // update it with its own id-derived ref (no store extension needed).
+    const auto created = m_accountStore.create(account);
+    if (!created.ok()) {
+        qWarning() << "Account create failed:" << created.error.message << created.error.detail;
+        setStatusText(QStringLiteral("账号保存失败"));
+        return;
+    }
+    account.id = *created.value;
+    account.credentialRef = QStringLiteral("account-%1").arg(account.id);
+    if (const MailError updated = m_accountStore.update(account); updated) {
+        qWarning() << "Account update failed:" << updated.message << updated.detail;
+        // R94③: a clean rollback only reaches debug level; a failed rollback
+        // is a warning carrying both error texts (the row may have survived).
+        if (const MailError rolledBack = m_accountStore.remove(account.id); rolledBack) {
+            qWarning() << "Account ROLLBACK FAILED for account" << account.id
+                       << "- update:" << updated.message << updated.detail
+                       << "- remove:" << rolledBack.message << rolledBack.detail;
+        } else {
+            qDebug() << "Rolled back account" << account.id << "after a failed update";
+        }
+        setStatusText(QStringLiteral("账号保存失败"));
+        return;
+    }
+
+    // Step 2: the secret. A keyring failure rolls the account row back again.
+    if (!m_credentials.write(account.credentialRef, password)) {
+        qWarning() << "Credential write failed for account" << account.id;
+        // Same R94③ split as above.
+        if (const MailError rolledBack = m_accountStore.remove(account.id); rolledBack) {
+            qWarning() << "Account ROLLBACK FAILED for account" << account.id
+                       << "- credential write failed and removal also failed - remove:"
+                       << rolledBack.message << rolledBack.detail;
+        } else {
+            qDebug() << "Rolled back account" << account.id << "after a failed credential write";
+        }
+        setStatusText(QStringLiteral("凭据写入失败"));
+        return;
+    }
+
+    setStatusText(m_credentials.isPersistent() ? QStringLiteral("账号已添加")
+                                               : QStringLiteral("密码仅本次会话有效"));
+
+    // Follow-up wiring unchanged from initialize()/refresh(): the new account
+    // becomes current, its (empty) folder list reloads, and the sync starts.
+    m_currentAccountId = account.id;
+    m_folders->reload(account.id);
+    m_messages->reload();
+    m_syncService.syncAccount(account);
 }
 
 void AppController::setDraftStore(DraftStore *store) {

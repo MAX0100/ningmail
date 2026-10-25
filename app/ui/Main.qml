@@ -79,6 +79,17 @@ ApplicationWindow {
         }
     }
 
+    // Task 15 (R93⑧): account creation entry point. The dialog validates and
+    // emits; AppController owns the persistence and the outcome surfaces
+    // through statusText. The controller never operates QML objects.
+    AccountSetupDialog {
+        id: accountDialog
+
+        function onAccountCreateRequested(fields) {
+            appController.createAccount(fields)
+        }
+    }
+
     SplitView {
         id: splitView
 
@@ -87,6 +98,10 @@ ApplicationWindow {
         FolderRail {
             SplitView.preferredWidth: 200
             SplitView.minimumWidth: 140
+
+            // R93⑧: the folder rail's empty state owns the add-account entry
+            // point; the dialog and its wiring live here in Main.
+            onAddAccountRequested: accountDialog.open()
         }
 
         MessageList {

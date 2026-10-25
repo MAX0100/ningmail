@@ -9,8 +9,9 @@ add_library(ningmail_core STATIC
     Store/Migrations.cpp
     Store/OutboxStore.cpp
     MemoryCredentialStore.cpp
-    SyncService.cpp
-    Version.cpp
+    MailtoParser.cpp
+    SingleInstance.cpp
+    SyncService.cpp    Version.cpp
     Version.h
 )
 
@@ -25,6 +26,7 @@ target_link_libraries(ningmail_core
         ningmail_mail
         Qt6::Core
         Qt6::Concurrent
+        Qt6::Network
         Qt6::Sql
 )
 

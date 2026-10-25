@@ -4,6 +4,10 @@ import QtQuick.Controls
 Pane {
     id: root
 
+    // Task 15: the rail's empty state carries the add-account entry point;
+    // Main owns the dialog itself, so the event simply hops up one level.
+    signal addAccountRequested()
+
     padding: 0
     background: Rectangle {
         color: Theme.surfaceAlt
@@ -24,6 +28,8 @@ Pane {
             visible: folderList.count === 0
             title: qsTr("还没有账号")
             description: qsTr("请先添加账号，文件夹会同步后出现在这里")
+            actionText: qsTr("添加账号")
+            onActionTriggered: root.addAccountRequested()
         }
 
         delegate: ItemDelegate {

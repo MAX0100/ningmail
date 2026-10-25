@@ -1,7 +1,9 @@
 #include "AppController.h"
 #include "FakeMailBackend.h"
+#include "MailtoParser.h"
 #include "MemoryCredentialStore.h"
 #include "SendService.h"
+#include "SingleInstance.h"
 #include "Store/AccountStore.h"
 #include "Store/Database.h"
 #include "Store/DraftStore.h"
@@ -16,6 +18,7 @@
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include <QTemporaryDir>
+#include <QUrl>
 
 #include <iostream>
 #include <memory>
@@ -25,6 +28,28 @@ namespace {
 
 int runApplication(int argc, char *argv[], bool smokeTest) {
     QGuiApplication app(argc, argv);
+
+    // Task 15 (R93⑥): the single-instance gate runs after QGuiApplication and
+    // is skipped entirely for --smoke-test so concurrent ctest smoke runs
+    // never kick each other off the shared key. Later processes forward their
+    // program-name-stripped argv to the running primary and exit.
+    std::unique_ptr<ningmail::SingleInstance> singleInstance;
+    if (!smokeTest) {
+        singleInstance =
+            std::make_unique<ningmail::SingleInstance>(QStringLiteral("ningmail-single-instance"));
+        if (!singleInstance->isPrimary()) {
+            // R94①: a successful forward means the running primary took over;
+            // this instance exits without touching the database or the UI.
+            if (singleInstance->sendArguments(app.arguments().mid(1)) &&
+                !singleInstance->isPrimary()) {
+                return 0;
+            }
+            // Forwarding failed: either the dead primary's stale lock was
+            // reclaimed and this instance is now primary (keep booting), or
+            // no single-instance IPC is possible and the GUI still runs (the
+            // degraded state was logged by SingleInstance).
+        }
+    }
 
     // --smoke-test runs against a one-shot temp directory DB that is discarded
     // when the process exits, so smoke runs never touch the real mailbox (R59).
@@ -115,6 +140,31 @@ int runApplication(int argc, char *argv[], bool smokeTest) {
     }
     if (smokeTest) {
         return 0;
+    }
+
+    // Task 15 (R93⑥): primary side. QLocalServer newConnection events arrive
+    // inside app.exec(); each forwarded argument resolves independently (a
+    // bad one only logs and never kills the primary or its window).
+    if (singleInstance) {
+        QObject::connect(singleInstance.get(), &ningmail::SingleInstance::argumentsReceived,
+                         &appController, [&appController](const QStringList &arguments) {
+                             for (const QString &raw : arguments) {
+                                 // `mailto:...` must work straight from the command line,
+                                 // where nothing pre-decoded exists yet.
+                                 const QUrl url = QUrl::fromUserInput(raw);
+                                 if (!url.isValid() || url.scheme() != QLatin1String("mailto")) {
+                                     qWarning() << "Ignoring non-mailto argument:" << raw;
+                                     continue;
+                                 }
+                                 const auto parsed = ningmail::MailtoParser::parse(url);
+                                 if (!parsed.ok()) {
+                                     qWarning() << "Ignoring unparseable mailto argument:" << raw
+                                                << parsed.error.message;
+                                     continue;
+                                 }
+                                 appController.openComposer(*parsed.value);
+                             }
+                         });
     }
     return app.exec();
 }
