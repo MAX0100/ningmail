@@ -3,6 +3,7 @@
 #include "MemoryCredentialStore.h"
 #include "Store/AccountStore.h"
 #include "Store/Database.h"
+#include "Store/DraftStore.h"
 #include "Store/FolderStore.h"
 #include "Store/MessageStore.h"
 #include "SyncService.h"
@@ -50,6 +51,11 @@ int runApplication(int argc, char *argv[], bool smokeTest) {
     ningmail::AccountStore accountStore(database);
     ningmail::FolderStore folderStore(database);
     ningmail::MessageStore messageStore(database);
+    // Drafts live in the same database file. The controller only keeps a
+    // nullable pointer to this store, so the object must outlive it: declare
+    // it here, before both the controller and the QML engine (see the
+    // teardown-order note further down).
+    ningmail::DraftStore draftStore(database);
 
     // R59: M1 always runs against the fake backend (the real backend is task
     // 13); demo secrets stay in memory and never reach the platform keystore.
@@ -81,6 +87,7 @@ int runApplication(int argc, char *argv[], bool smokeTest) {
     ningmail::SyncService syncService(&backendFactory, &credentials);
     ningmail::AppController appController(accountStore, folderStore, messageStore, syncService,
                                           credentials);
+    appController.setDraftStore(&draftStore);
 
     appController.initialize();
 

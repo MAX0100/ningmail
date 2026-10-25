@@ -2,6 +2,7 @@ add_library(ningmail_core STATIC
     MetaTypes.cpp
     Store/AccountStore.cpp
     Store/Database.cpp
+    Store/DraftStore.cpp
     Store/FolderStore.cpp
     Store/MessageStore.cpp
     Store/Migrations.cpp

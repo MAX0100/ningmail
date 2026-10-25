@@ -1,6 +1,7 @@
 #include "AppController.h"
 
 #include "CredentialStore.h"
+#include "Store/DraftStore.h"
 
 #include <QList>
 #include <utility>
@@ -319,6 +320,58 @@ void AppController::openMessage(MessageId messageId) {
 
 void AppController::composeNew() {
     emit composeRequested(QVariantMap{});
+}
+
+void AppController::setDraftStore(DraftStore *store) {
+    m_draftStore = store;
+}
+
+qint64 AppController::saveDraft(qint64 draftId, const QStringList &to, const QStringList &cc,
+                                const QString &subject, const QString &body) {
+    if (m_currentAccountId <= 0) {
+        setStatusText(QStringLiteral("请先添加账号"));
+        return -1;
+    }
+    if (m_draftStore == nullptr) {
+        setStatusText(QStringLiteral("草稿保存未启用"));
+        return -1;
+    }
+
+    Draft draft;
+    draft.id = draftId;
+    draft.accountId = m_currentAccountId;
+    draft.subject = subject;
+    draft.bodyText = body;
+    for (const QString &address : to) {
+        draft.recipients.append(MailAddress{QString(), address});
+    }
+    for (const QString &address : cc) {
+        draft.cc.append(MailAddress{QString(), address});
+    }
+
+    const auto saved = m_draftStore->save(draft);
+    if (!saved.ok()) {
+        qWarning() << "Draft save failed:" << saved.error.message << saved.error.detail;
+        setStatusText(QStringLiteral("草稿保存失败：") + saved.error.message);
+        return -1;
+    }
+    setStatusText(QStringLiteral("草稿已保存"));
+    return *saved.value;
+}
+
+void AppController::sendMessage(const QStringList &to, const QStringList &cc,
+                                const QString &subject, const QString &body) {
+    if (m_sendService == nullptr) {
+        setStatusText(QStringLiteral("发送服务未启用"));
+        return;
+    }
+    // Task 12 wires the injected service up: build an OutgoingMessage (bcc
+    // empty) and hand it to the outbox. The parameters stay part of the
+    // stable call contract; T11 only exposes the guard branch above.
+    (void)to;
+    (void)cc;
+    (void)subject;
+    (void)body;
 }
 
 void AppController::setStatusText(const QString &text) {

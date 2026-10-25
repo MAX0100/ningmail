@@ -34,8 +34,7 @@ ToolBar {
         Button {
             objectName: "composeButton"
             text: qsTr("✉ 写信")
-            // Enabled in task 11 once the composer window exists.
-            enabled: false
+            onClicked: appController.composeNew()
         }
 
         Button {

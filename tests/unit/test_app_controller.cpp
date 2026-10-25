@@ -5,6 +5,7 @@
 #include "MemoryCredentialStore.h"
 #include "Store/AccountStore.h"
 #include "Store/Database.h"
+#include "Store/DraftStore.h"
 #include "Store/FolderStore.h"
 #include "Store/MessageStore.h"
 #include "SyncService.h"
@@ -37,6 +38,7 @@ struct ControllerFixture {
     std::unique_ptr<ningmail::MemoryCredentialStore> credentials;
     std::unique_ptr<ningmail::FakeMailBackendFactory> backendFactory;
     std::unique_ptr<ningmail::SyncService> syncService;
+    std::unique_ptr<ningmail::DraftStore> draftStore;
     std::unique_ptr<ningmail::AppController> controller;
     ningmail::AccountId accountId = 0;
     QString credentialRef = QStringLiteral("ref-controller");
@@ -48,6 +50,7 @@ struct ControllerFixture {
         accountStore = std::make_unique<ningmail::AccountStore>(*database);
         folderStore = std::make_unique<ningmail::FolderStore>(*database);
         messageStore = std::make_unique<ningmail::MessageStore>(*database);
+        draftStore = std::make_unique<ningmail::DraftStore>(*database);
         credentials = std::make_unique<ningmail::MemoryCredentialStore>();
         backendFactory = std::make_unique<ningmail::FakeMailBackendFactory>();
         syncService =
@@ -360,4 +363,87 @@ TEST_CASE("AppController openMessage fills the reader header fields", "[controll
     CHECK(reader.value(QStringLiteral("error")).toString().isEmpty());
     CHECK(reader.value(QStringLiteral("html")).toString().isEmpty());
     CHECK(reader.value(QStringLiteral("plainText")).toString().isEmpty());
+}
+
+// Task 11: the R78 three-branch saveDraft contract. The store pointer itself
+// is invisible to the QML layer; the branch order is no-account first, then
+// the missing store, then success.
+TEST_CASE("AppController saveDraft runs the three-branch contract", "[controller][draft]") {
+    ControllerFixture fixture;
+
+    // Branch 1: no account -> -1 plus the setup hint.
+    CHECK(fixture.controller->saveDraft(-1, QStringList{"rong@example.com"}, QStringList{},
+                                        QStringLiteral("Quarterly notes"),
+                                        QStringLiteral("First line")) == -1);
+    CHECK(fixture.controller->statusText() == QStringLiteral("请先添加账号"));
+
+    fixture.seedAccount();
+    fixture.controller->initialize();
+
+    // Branch 2: no draft store injected -> -1 plus the feature hint.
+    CHECK(fixture.controller->saveDraft(-1, QStringList{"rong@example.com"}, QStringList{},
+                                        QStringLiteral("Quarterly notes"),
+                                        QStringLiteral("First line")) == -1);
+    CHECK(fixture.controller->statusText() == QStringLiteral("草稿保存未启用"));
+
+    // Branch 3: wired store -> the new row id comes back as a positive value.
+    fixture.controller->setDraftStore(fixture.draftStore.get());
+    const QStringList to{QStringLiteral("rong@example.com"), QStringLiteral("plain@example.com")};
+    const QStringList cc{QStringLiteral("cc@example.com")};
+    const qint64 draftId = fixture.controller->saveDraft(
+        -1, to, cc, QStringLiteral("Quarterly notes"), QStringLiteral("First line"));
+    CHECK(draftId > 0);
+    CHECK(fixture.controller->statusText() == QStringLiteral("草稿已保存"));
+
+    const auto stored = fixture.draftStore->get(draftId);
+    REQUIRE(stored.ok());
+    CHECK(stored.value->accountId == fixture.accountId);
+    CHECK(stored.value->subject == QStringLiteral("Quarterly notes"));
+    REQUIRE(stored.value->recipients.size() == 2);
+    CHECK(stored.value->recipients.at(0).name.isEmpty());
+    CHECK(stored.value->recipients.at(0).address == QStringLiteral("rong@example.com"));
+    REQUIRE(stored.value->cc.size() == 1);
+    CHECK(stored.value->cc.at(0).address == QStringLiteral("cc@example.com"));
+
+    // draftId > 0 updates the same row (QML writes the returned id back).
+    const qint64 updatedId = fixture.controller->saveDraft(
+        draftId, to, cc, QStringLiteral("Renamed"), QStringLiteral("Edited body"));
+    CHECK(updatedId == draftId);
+    const auto after = fixture.draftStore->get(draftId);
+    REQUIRE(after.ok());
+    CHECK(after.value->subject == QStringLiteral("Renamed"));
+    CHECK(fixture.draftStore->list(fixture.accountId).value->size() == 1);
+}
+
+// Task 11: without a SendService (task 12) sending stays a guarded no-op.
+TEST_CASE("AppController sendMessage reports the missing send service", "[controller][draft]") {
+    ControllerFixture fixture;
+    fixture.seedAccount();
+    fixture.controller->initialize();
+
+    fixture.controller->sendMessage(QStringList{"rong@example.com"}, QStringList{},
+                                    QStringLiteral("Quarterly notes"),
+                                    QStringLiteral("First line"));
+    CHECK(fixture.controller->statusText() == QStringLiteral("发送服务未启用"));
+}
+
+// Task 11 fix round 1: saveDraft's store-failure branch must not be silent -
+// statusText carries the failure in the same style as the sync paths.
+TEST_CASE("AppController saveDraft reports store failures", "[controller][draft]") {
+    ControllerFixture fixture;
+    fixture.seedAccount();
+    fixture.controller->initialize();
+
+    // A database that was never opened makes every store call fail without
+    // needing a poisoned fixture: transaction() fails first and save() maps
+    // that to a Storage MailError through the regular error path.
+    ningmail::Database broken(fixture.dir.filePath("unopened.db"));
+    ningmail::DraftStore brokenStore(broken);
+    fixture.controller->setDraftStore(&brokenStore);
+
+    const qint64 result = fixture.controller->saveDraft(
+        -1, QStringList{QStringLiteral("a@b.c")}, QStringList{}, QStringLiteral("Quarterly notes"),
+        QStringLiteral("First line"));
+    CHECK(result == -1);
+    CHECK(fixture.controller->statusText().startsWith(QStringLiteral("草稿保存失败")));
 }

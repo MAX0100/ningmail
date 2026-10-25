@@ -13,6 +13,7 @@
 #include <QHash>
 #include <QObject>
 #include <QString>
+#include <QStringList>
 #include <QVariantMap>
 
 #include <memory>
@@ -20,6 +21,8 @@
 namespace ningmail {
 
 class CredentialStore;
+class DraftStore;
+class SendService;
 
 /// GUI-thread orchestrator of the three-pane shell: owns the list models and
 /// wires SyncService results through the stores and back into the models.
@@ -42,6 +45,12 @@ class AppController : public QObject {
     Q_INVOKABLE void refresh();
     Q_INVOKABLE void openMessage(MessageId messageId);
     Q_INVOKABLE void composeNew();
+
+    void setDraftStore(DraftStore *store); // 可空；为空时自动保存不可用
+    Q_INVOKABLE qint64 saveDraft(qint64 draftId, const QStringList &to, const QStringList &cc,
+                                 const QString &subject, const QString &body);
+    Q_INVOKABLE void sendMessage(const QStringList &to, const QStringList &cc,
+                                 const QString &subject, const QString &body);
 
     FolderListModel *folders() const {
         return m_folders.get();
@@ -90,6 +99,11 @@ class AppController : public QObject {
     bool m_syncing = false;
     QString m_statusText;
     QVariantMap m_reader;
+    // Task 11: drafts are only autosaved once main.cpp wires the store in;
+    // nullptr keeps composing usable without persistence (M1 demo fallback).
+    DraftStore *m_draftStore = nullptr;
+    // Task 12 injects the SendService; until then every send stays disabled.
+    SendService *m_sendService = nullptr;
 };
 
 } // namespace ningmail

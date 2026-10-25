@@ -9,6 +9,7 @@ qt_add_qml_module(ningmail_ui
     QML_FILES
         Main.qml
         Theme.qml
+        ComposerWindow.qml
         EmptyState.qml
         FolderRail.qml
         MessageList.qml
