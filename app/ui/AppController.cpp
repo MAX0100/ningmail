@@ -1,6 +1,7 @@
 #include "AppController.h"
 
 #include "CredentialStore.h"
+#include "SendService.h"
 #include "Store/DraftStore.h"
 
 #include <QList>
@@ -326,6 +327,39 @@ void AppController::setDraftStore(DraftStore *store) {
     m_draftStore = store;
 }
 
+void AppController::setSendService(SendService *service) {
+    if (m_sendService != nullptr) {
+        // First injection wins; the itemStateChanged connection below is
+        // made exactly once.
+        return;
+    }
+    m_sendService = service;
+    // Queued steps from SendService already arrive on the GUI thread; the
+    // connection only maps the final states into user-visible status text.
+    connect(service, &SendService::itemStateChanged, this,
+            [this](qint64 outboxId, OutboxState state, const QString &error) {
+                Q_UNUSED(outboxId);
+                switch (state) {
+                case OutboxState::Sent:
+                    setStatusText(QStringLiteral("已发送"));
+                    break;
+                case OutboxState::Retry:
+                case OutboxState::Failed: {
+                    // The stored error text (backend message or wiring hint)
+                    // travels with the failure hint.
+                    setStatusText(error.isEmpty() ? QStringLiteral("发送失败")
+                                                  : QStringLiteral("发送失败：") + error);
+                    break;
+                }
+                case OutboxState::Pending:
+                case OutboxState::Sending:
+                    // Transient states stay invisible; the final delivery
+                    // decides the status line.
+                    break;
+                }
+            });
+}
+
 qint64 AppController::saveDraft(qint64 draftId, const QStringList &to, const QStringList &cc,
                                 const QString &subject, const QString &body) {
     if (m_currentAccountId <= 0) {
@@ -361,17 +395,45 @@ qint64 AppController::saveDraft(qint64 draftId, const QStringList &to, const QSt
 
 void AppController::sendMessage(const QStringList &to, const QStringList &cc,
                                 const QString &subject, const QString &body) {
+    if (m_currentAccountId <= 0) {
+        // Same guard order as saveDraft: the account question comes first.
+        setStatusText(QStringLiteral("请先添加账号"));
+        return;
+    }
     if (m_sendService == nullptr) {
         setStatusText(QStringLiteral("发送服务未启用"));
         return;
     }
-    // Task 12 wires the injected service up: build an OutgoingMessage (bcc
-    // empty) and hand it to the outbox. The parameters stay part of the
-    // stable call contract; T11 only exposes the guard branch above.
-    (void)to;
-    (void)cc;
-    (void)subject;
-    (void)body;
+    // T11 kept the parameters part of the stable call contract; task 12 turns
+    // them into the OutgoingMessage the outbox (bcc intentionally left empty)
+    // stores and sends.
+    const auto account = m_accountStore.get(m_currentAccountId);
+    if (!account.ok()) {
+        qWarning() << "Account read failed:" << account.error.message << account.error.detail;
+        setStatusText(QStringLiteral("发送失败：账号读取错误"));
+        return;
+    }
+
+    OutgoingMessage message;
+    message.account = *account.value;
+    for (const QString &address : to) {
+        message.to.append(MailAddress{QString(), address});
+    }
+    for (const QString &address : cc) {
+        message.cc.append(MailAddress{QString(), address});
+    }
+    message.subject = subject;
+    message.bodyText = body;
+
+    const qint64 outboxId = m_sendService->enqueue(message);
+    if (outboxId <= 0) {
+        qWarning() << "Send enqueue failed for account" << m_currentAccountId;
+        setStatusText(QStringLiteral("发送失败：入队失败"));
+        return;
+    }
+    // The itemStateChanged handler inside setSendService carries the outcome
+    // (已发送 / 发送失败…) into statusText once the worker reports back.
+    m_sendService->sendNow(outboxId);
 }
 
 void AppController::setStatusText(const QString &text) {

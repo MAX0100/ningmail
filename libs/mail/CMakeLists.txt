@@ -1,6 +1,7 @@
 add_library(ningmail_mail STATIC
     Charset.cpp
     FakeMailBackend.cpp
+    MimeBuilder.cpp
     MimeParser.cpp
 )
 

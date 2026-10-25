@@ -1,11 +1,13 @@
 #include "AppController.h"
 #include "FakeMailBackend.h"
 #include "MemoryCredentialStore.h"
+#include "SendService.h"
 #include "Store/AccountStore.h"
 #include "Store/Database.h"
 #include "Store/DraftStore.h"
 #include "Store/FolderStore.h"
 #include "Store/MessageStore.h"
+#include "Store/OutboxStore.h"
 #include "SyncService.h"
 #include "Types.h"
 #include "Version.h"
@@ -83,11 +85,19 @@ int runApplication(int argc, char *argv[], bool smokeTest) {
     ningmail::MemoryCredentialStore credentials;
     credentials.write(QStringLiteral("demo-account"), QStringLiteral("secret"));
 
+    // The outbox lives in the same database file; like the draft store it must
+    // outlive both the controller and the QML engine, so it is declared here.
+    ningmail::OutboxStore outboxStore(database);
+
     ningmail::FakeMailBackendFactory backendFactory;
+    // The send service shares the fake backend (R59: M1 always runs against
+    // the fake backend) and the outbox store.
+    ningmail::SendService sendService(outboxStore, backendFactory, credentials);
     ningmail::SyncService syncService(&backendFactory, &credentials);
     ningmail::AppController appController(accountStore, folderStore, messageStore, syncService,
                                           credentials);
     appController.setDraftStore(&draftStore);
+    appController.setSendService(&sendService);
 
     appController.initialize();
 

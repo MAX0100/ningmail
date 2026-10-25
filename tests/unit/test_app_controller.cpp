@@ -3,11 +3,13 @@
 #include "FakeMailBackend.h"
 #include "MailError.h"
 #include "MemoryCredentialStore.h"
+#include "SendService.h"
 #include "Store/AccountStore.h"
 #include "Store/Database.h"
 #include "Store/DraftStore.h"
 #include "Store/FolderStore.h"
 #include "Store/MessageStore.h"
+#include "Store/OutboxStore.h"
 #include "SyncService.h"
 #include "Types.h"
 #include "models/FolderListModel.h"
@@ -35,9 +37,11 @@ struct ControllerFixture {
     std::unique_ptr<ningmail::AccountStore> accountStore;
     std::unique_ptr<ningmail::FolderStore> folderStore;
     std::unique_ptr<ningmail::MessageStore> messageStore;
+    std::unique_ptr<ningmail::OutboxStore> outboxStore;
     std::unique_ptr<ningmail::MemoryCredentialStore> credentials;
     std::unique_ptr<ningmail::FakeMailBackendFactory> backendFactory;
     std::unique_ptr<ningmail::SyncService> syncService;
+    std::unique_ptr<ningmail::SendService> sendService;
     std::unique_ptr<ningmail::DraftStore> draftStore;
     std::unique_ptr<ningmail::AppController> controller;
     ningmail::AccountId accountId = 0;
@@ -50,13 +54,22 @@ struct ControllerFixture {
         accountStore = std::make_unique<ningmail::AccountStore>(*database);
         folderStore = std::make_unique<ningmail::FolderStore>(*database);
         messageStore = std::make_unique<ningmail::MessageStore>(*database);
+        outboxStore = std::make_unique<ningmail::OutboxStore>(*database);
         draftStore = std::make_unique<ningmail::DraftStore>(*database);
         credentials = std::make_unique<ningmail::MemoryCredentialStore>();
         backendFactory = std::make_unique<ningmail::FakeMailBackendFactory>();
         syncService =
             std::make_unique<ningmail::SyncService>(backendFactory.get(), credentials.get());
+        sendService =
+            std::make_unique<ningmail::SendService>(*outboxStore, *backendFactory, *credentials);
         controller = std::make_unique<ningmail::AppController>(
             *accountStore, *folderStore, *messageStore, *syncService, *credentials);
+    }
+
+    // Task 12: opt-in wiring — default fixtures keep the unguarded (no service)
+    // behaviour so the pre-wiring tests stay intact.
+    void wireSendService() {
+        controller->setSendService(&*sendService);
     }
 
     /// R57 happy-path setup: one account, its secret, and a fake seed. Callers
@@ -446,4 +459,71 @@ TEST_CASE("AppController saveDraft reports store failures", "[controller][draft]
         QStringLiteral("First line"));
     CHECK(result == -1);
     CHECK(fixture.controller->statusText().startsWith(QStringLiteral("草稿保存失败")));
+}
+
+// Task 12: the send-service wiring. The branch order mirrors saveDraft: no
+// account first, then success/failure flows through SendService::enqueue and
+// the itemStateChanged mapping into statusText.
+TEST_CASE("AppController sendMessage reports a missing account", "[controller][send]") {
+    ControllerFixture fixture;
+    fixture.controller->initialize();
+    REQUIRE(fixture.controller->statusText() == QStringLiteral("请先添加账号"));
+    fixture.wireSendService();
+
+    fixture.controller->sendMessage(QStringList{"rong@example.com"}, QStringList{},
+                                    QStringLiteral("Quarterly notes"),
+                                    QStringLiteral("First line"));
+
+    CHECK(fixture.controller->statusText() == QStringLiteral("请先添加账号"));
+}
+
+TEST_CASE("AppController sendMessage sends through the wired send service", "[controller][send]") {
+    ControllerFixture fixture;
+    fixture.wireSendService();
+    fixture.seedAccount();
+    fixture.controller->initialize();
+
+    QSignalSpy spy(&*fixture.sendService, &ningmail::SendService::itemStateChanged);
+    fixture.controller->sendMessage(QStringList{QStringLiteral("rong@example.com")},
+                                    QStringList{QStringLiteral("cc@example.com")},
+                                    QStringLiteral("Quarterly notes"),
+                                    QStringLiteral("First line"));
+
+    // Sending is delivered first, Sent last — the mapping exposes 已发送.
+    QTRY_COMPARE(spy.count(), 2);
+    const qint64 outboxId = spy.at(0).at(0).value<qint64>();
+    CHECK(outboxId > 0);
+    CHECK(spy.at(1).at(1).value<ningmail::OutboxState>() == ningmail::OutboxState::Sent);
+    CHECK(fixture.controller->statusText() == QStringLiteral("已发送"));
+
+    // The composed message reached the outbox with the composer's content.
+    const auto stored = fixture.outboxStore->get(outboxId);
+    REQUIRE(stored.ok());
+    CHECK(stored.value->accountId == fixture.accountId);
+    REQUIRE(stored.value->recipients.size() == 1);
+    CHECK(stored.value->recipients.at(0).address == QStringLiteral("rong@example.com"));
+    CHECK(stored.value->subject == QStringLiteral("Quarterly notes"));
+    CHECK(stored.value->bodyText == QStringLiteral("First line"));
+
+    // And the backend recorded the outgoing copy: two entries by construction
+    // (send() logs its own empty-rawMime record, appendSent() logs the full
+    // raw MIME copy).
+    CHECK(fixture.backendFactory->seed(fixture.accountId).sent.size() == 2);
+}
+
+TEST_CASE("AppController sendMessage surfaces a send failure in statusText", "[controller][send]") {
+    ControllerFixture fixture;
+    fixture.wireSendService();
+    fixture.seedAccount();
+    fixture.controller->initialize();
+    fixture.backendFactory->seed(fixture.accountId).failNextSend = true;
+
+    QSignalSpy spy(&*fixture.sendService, &ningmail::SendService::itemStateChanged);
+    fixture.controller->sendMessage(QStringList{QStringLiteral("rong@example.com")}, QStringList{},
+                                    QStringLiteral("Quarterly notes"),
+                                    QStringLiteral("First line"));
+
+    QTRY_COMPARE(spy.count(), 2);
+    CHECK(spy.at(1).at(1).value<ningmail::OutboxState>() == ningmail::OutboxState::Retry);
+    CHECK(fixture.controller->statusText().startsWith(QStringLiteral("发送失败")));
 }

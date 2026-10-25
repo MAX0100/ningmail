@@ -47,6 +47,8 @@ class AppController : public QObject {
     Q_INVOKABLE void composeNew();
 
     void setDraftStore(DraftStore *store); // 可空；为空时自动保存不可用
+    // Task 12: 可空；为空时发送保持禁用（重复注入会被忽略）
+    void setSendService(SendService *service);
     Q_INVOKABLE qint64 saveDraft(qint64 draftId, const QStringList &to, const QStringList &cc,
                                  const QString &subject, const QString &body);
     Q_INVOKABLE void sendMessage(const QStringList &to, const QStringList &cc,
