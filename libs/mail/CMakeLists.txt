@@ -17,4 +17,16 @@ target_link_libraries(ningmail_mail
         ICU::uc
 )
 
+# libetpan provides the real IMAP/SMTP adapter; its sources join the
+# target only when found, the rest of ningmail_mail stays libetpan-free.
+if(NINGMAIL_WITH_LIBETPAN)
+    target_sources(ningmail_mail PRIVATE
+        LibetpanBackend.cpp
+        LibetpanBackendFactory.cpp
+        LibetpanHelpers.cpp
+    )
+    target_compile_definitions(ningmail_mail PUBLIC NINGMAIL_WITH_LIBETPAN=1)
+    target_link_libraries(ningmail_mail PUBLIC PkgConfig::LIBETPAN)
+endif()
+
 ningmail_apply_warnings(ningmail_mail)

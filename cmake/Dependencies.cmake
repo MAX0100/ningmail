@@ -22,6 +22,14 @@ find_package(PkgConfig REQUIRED)
 
 pkg_check_modules(GUMBO REQUIRED IMPORTED_TARGET gumbo)
 
+# libetpan drives the real IMAP/SMTP wire protocol (task 13). It is optional:
+# without it the fake backend stays in place and every libetpan source, test
+# and NINGMAIL_WITH_LIBETPAN gate is compiled out.
+pkg_check_modules(LIBETPAN IMPORTED_TARGET libetpan)
+if(LIBETPAN_FOUND)
+    set(NINGMAIL_WITH_LIBETPAN 1)
+endif()
+
 # litehtml renders sanitized email HTML into a layout tree (task 10b, R70).
 # By default it is fetched at configure time (pinned v0.10 commit; the clone
 # under build/_deps is never committed); opt-in NINGMAIL_USE_SYSTEM_LITEHTML=ON
